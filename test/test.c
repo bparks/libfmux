@@ -42,12 +42,40 @@ test_writing()
     fmux_close(handle);
 }
 
+void
+test_reading()
+{
+    int fd[2];
+    int err = pipe(fd);
+    if (err < -1) { perror("Pipe creation"); FAILURE }
+
+    char * hello = "\0\0\0\1\0\0\0\6Hello";
+    write(fd[1], hello, 14);
+
+    fmux_handle* handle = fmux_open(fd[0], FMUX_RECOMMENDED_CHANS);
+    fmux_channel* channel = fmux_open_channel(handle, 1);
+    ASSERT((channel != NULL))
+    char buf[1024];
+    int nread = fmux_read(channel, buf, 1024);
+    ASSERT((nread == 6))
+    ASSERT((strcmp(buf, "Hello") == 0))
+
+    char * goodbye = "\0\0\0\1\0\0\0\x8Goodbye";
+    write(fd[1], goodbye, 16);
+    nread = fmux_read(channel, buf, 1024);
+    ASSERT((nread == 8))
+    ASSERT((strcmp(buf, "Goodbye") == 0))
+
+    fmux_close(handle);
+}
+
 
 int
 main (int argc, char ** argv)
 {
     test_basic_plumbing();
     test_writing();
+    test_reading();
 
     printf("\n\nTests: %6d; Passed: %6d; Failed: %6d\n\n", tests, successes, failures);
 

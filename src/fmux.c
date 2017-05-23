@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <pthread.h>
+#include <poll.h>
 
 //For debugging
 #include <stdio.h>
@@ -49,7 +50,8 @@ fmux_open(int fd, int max_channels)
 
     ret->fd = fd;
     ret->max_channels = max_channels;
-    ret->channels = calloc(max_channels, sizeof(fmux_channel*));
+    ret->channels = malloc(max_channels * sizeof(fmux_channel*));
+    memset(ret->channels, 0, max_channels * sizeof(fmux_channel*));
 
     pthread_mutex_init(&(ret->lock), NULL);
 
@@ -64,12 +66,14 @@ fmux_close(fmux_handle* handle)
             continue;
         fmux_close_channel(handle, i);
     }
-    free(handle->channels);
+    fprintf(stderr, "Would have freed (channel[]) pointer at %x (%lu bytes)\n", (unsigned int)handle->channels, sizeof(*(handle->channels)));
+    //free(handle->channels);
     handle->channels = NULL;
     int err = pthread_mutex_destroy(&(handle->lock));
     if (err < 0) perror("Destroying mutex");
     close(handle->fd); //Should I do this? I don't open this file descriptor...
-    free(handle);
+    fprintf(stderr, "Would have freed (handle) pointer at %x (%lu bytes)\n", (unsigned int)handle, sizeof(*handle));
+    //free(handle);
 }
 
 fmux_channel*
@@ -77,6 +81,11 @@ fmux_open_channel(fmux_handle* handle, int channel_id)
 {
     if (handle == NULL) return NULL;
     if (channel_id >= handle->max_channels) return NULL;
+
+    if (handle->channels[channel_id] != NULL) {
+        fprintf(stderr, "Channel %d has already been allocated!\n", channel_id);
+        return handle->channels[channel_id];
+    }
 
     fmux_channel* chan = malloc(sizeof(fmux_channel));
     chan->id = channel_id;
@@ -102,7 +111,9 @@ fmux_close_channel(fmux_handle* handle, int index)
     close(channel->pipe_write[0]);
     close(channel->pipe_write[1]);
     channel->handle = NULL;
-    free(channel);
+    fprintf(stderr, "Would have freed (channel) pointer at %x (%lu bytes)\n", (unsigned int)channel, sizeof(*channel));
+    //free(channel);
+    return 0;
 }
 
 /* Reading */
@@ -110,19 +121,48 @@ fmux_close_channel(fmux_handle* handle, int index)
 int
 fmux_pop(fmux_handle* handle, fmux_message* message)
 {
+    int channel_id, len, tmp[2];
+    read(handle->fd, tmp, 8);
+    channel_id = ntohl(tmp[0]);
+    len = ntohl(tmp[1]);
+    message = realloc(message, len + 8);
+    memset(message, 0, len + 8);
+    message->channel_id = channel_id;
+    message->nbytes = len;
+    read(handle->fd, &(message->data), len);
+    return 1;
+}
 
+/* PRIVATE */ int
+fmux_flush_reads(fmux_handle* handle)
+{
+    int m_read = 0;
+    struct pollfd pfd = {.fd = handle->fd, .events = POLLRDNORM };
+    while (poll(&pfd, 1, 0) == 1) {
+        fmux_message* mess = malloc(8);
+        fmux_pop(handle, mess);
+        write(handle->channels[mess->channel_id]->pipe_read[1], &(mess->data), mess->nbytes);
+        free(mess);
+        m_read++;
+
+        //Reset the struct
+        pfd.fd = handle->fd;
+        pfd.events = POLLRDNORM;
+    }
+    return m_read;
 }
 
 int
 fmux_select(fmux_handle* handle, fmux_channel** ready, struct timeval *restrict timeout)
 {
-
+    return 0;
 }
 
 int
 fmux_read(fmux_channel* channel, void* buf, size_t nbyte)
 {
-
+    fmux_flush_reads(channel->handle);
+    return read(channel->pipe_read[0], buf, nbyte);
 }
 
 /* Writing */
@@ -134,7 +174,7 @@ fmux_push(fmux_handle* handle, fmux_message* message)
     int bytes = message->nbytes;
     message->nbytes = htonl(bytes);
     message->channel_id = htonl(id);
-    write(handle->fd, message, bytes + 8);
+    return write(handle->fd, message, bytes + 8);
 }
 
 /* PRIVATE */ int
@@ -156,21 +196,24 @@ fmux_flush_writes(fmux_handle* handle)
         if (FD_ISSET(handle->channels[i]->pipe_write[0], &fds)) {
             char buf[1024];
             int bytes = read(handle->channels[i]->pipe_write[0], buf, 1024);
-            fmux_message* mess = calloc(bytes + 8, 1);
+            fmux_message* mess = malloc(bytes + 8);
+            memset(mess, 0, bytes + 8);
             mess->channel_id = i;
             mess->nbytes = bytes;
-            memcpy(mess->data, buf, bytes);
+            memcpy(&(mess->data), buf, bytes);
             fmux_push(handle, mess);
             free(mess);
         }
     }
+    return 0;
 }
 
 int
 fmux_write(fmux_channel* channel, const void* buf, size_t nbyte)
 {
-    write(channel->pipe_write[1], buf, nbyte);
+    int nwritten = write(channel->pipe_write[1], buf, nbyte);
     fmux_flush_writes(channel->handle);
+    return nwritten;
 }
 
 /* A background process (optional) for continuously flushing the socket.
@@ -181,19 +224,19 @@ fmux_write(fmux_channel* channel, const void* buf, size_t nbyte)
 int
 fmux_pump_start()
 {
-
+    return 0;
 }
 
 int
 fmux_pump_add_handle(fmux_handle* handle)
 {
-
+    return 0;
 }
 
 int
 fmux_pump_remove_handle(fmux_handle* handle)
 {
-
+    return 0;
 }
 
 int

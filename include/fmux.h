@@ -27,7 +27,7 @@ typedef struct _fmux_handle fmux_handle;
 typedef struct {
     int channel_id;
     size_t nbytes;
-    char data[];
+    char data;
 } fmux_message;
 
 /* Housekeeping */
