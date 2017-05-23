@@ -1,0 +1,7 @@
+libfmux.so
+libfmux.a
+fmux.a
+*.o
+/test/test
+*.dtps
+*.dSYM
