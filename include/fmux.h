@@ -4,6 +4,10 @@
 #ifndef _FMUX_H_
 #define _FMUX_H_
 
+#ifdef __cplusplus
+extern "C" {
+#endif //__cplusplus
+
 /*
 #ifndef EXPORT
 #define EXPORT extern
@@ -77,5 +81,9 @@ fmux_pump_remove_handle(fmux_handle* handle);
 
 int
 fmux_pump_stop(int pump_id);
+
+#ifdef __cplusplus
+}
+#endif //__cplusplus
 
 #endif //_FMUX_H_
