@@ -113,6 +113,16 @@ fmux_close_channel(fmux_handle* handle, int index)
     return 0;
 }
 
+int
+fmux_channel_is_good(fmux_channel* channel)
+{
+    if (channel == NULL) return 0;
+    if (channel->handle == NULL) return 0;
+    if (channel->id < 0 || channel->id > channel->handle->max_channels) return 0;
+
+    return 1;
+}
+
 /* Reading */
 
 int
@@ -138,9 +148,11 @@ fmux_flush_reads(fmux_handle* handle)
     while (poll(&pfd, 1, 0) == 1) {
         fmux_message* mess = malloc(2 * sizeof(uint32_t));
         fmux_pop(handle, &mess);
-        write(handle->channels[mess->channel_id]->pipe_read[1], mess->data, mess->nbytes);
+        if (mess->channel_id < handle->max_channels && handle->channels[mess->channel_id] != NULL) {
+            write(handle->channels[mess->channel_id]->pipe_read[1], mess->data, mess->nbytes);
+            m_read++;
+        }
         free(mess);
-        m_read++;
 
         //Reset the struct
         pfd.fd = handle->fd;
@@ -158,6 +170,8 @@ fmux_select(fmux_handle* handle, fmux_channel** ready, struct timeval *restrict 
 int
 fmux_read(fmux_channel* channel, void* buf, size_t nbyte)
 {
+    if (!fmux_channel_is_good(channel)) return 0;
+
     fmux_flush_reads(channel->handle);
     return read(channel->pipe_read[0], buf, nbyte);
 }
@@ -208,6 +222,8 @@ fmux_flush_writes(fmux_handle* handle)
 int
 fmux_write(fmux_channel* channel, const void* buf, size_t nbyte)
 {
+    if (!fmux_channel_is_good(channel)) return 0;
+
     int nwritten = write(channel->pipe_write[1], buf, nbyte);
     fmux_flush_writes(channel->handle);
     return nwritten;
