@@ -66,14 +66,12 @@ fmux_close(fmux_handle* handle)
             continue;
         fmux_close_channel(handle, i);
     }
-    fprintf(stderr, "Would have freed (channel[]) pointer at %x (%lu bytes)\n", (unsigned int)handle->channels, sizeof(*(handle->channels)));
-    //free(handle->channels);
+    free(handle->channels);
     handle->channels = NULL;
     int err = pthread_mutex_destroy(&(handle->lock));
     if (err < 0) perror("Destroying mutex");
     close(handle->fd); //Should I do this? I don't open this file descriptor...
-    fprintf(stderr, "Would have freed (handle) pointer at %x (%lu bytes)\n", (unsigned int)handle, sizeof(*handle));
-    //free(handle);
+    free(handle);
 }
 
 fmux_channel*
@@ -111,25 +109,24 @@ fmux_close_channel(fmux_handle* handle, int index)
     close(channel->pipe_write[0]);
     close(channel->pipe_write[1]);
     channel->handle = NULL;
-    fprintf(stderr, "Would have freed (channel) pointer at %x (%lu bytes)\n", (unsigned int)channel, sizeof(*channel));
-    //free(channel);
+    free(channel);
     return 0;
 }
 
 /* Reading */
 
 int
-fmux_pop(fmux_handle* handle, fmux_message* message)
+fmux_pop(fmux_handle* handle, fmux_message** message)
 {
     int channel_id, len, tmp[2];
     read(handle->fd, tmp, 8);
     channel_id = ntohl(tmp[0]);
     len = ntohl(tmp[1]);
-    message = realloc(message, len + 8);
-    memset(message, 0, len + 8);
-    message->channel_id = channel_id;
-    message->nbytes = len;
-    read(handle->fd, &(message->data), len);
+    *message = realloc(*message, len + 2*sizeof(uint32_t));
+    memset(*message, 0, len + 2*sizeof(int));
+    (*message)->channel_id = channel_id;
+    (*message)->nbytes = len;
+    read(handle->fd, (*message)->data, len);
     return 1;
 }
 
@@ -139,9 +136,9 @@ fmux_flush_reads(fmux_handle* handle)
     int m_read = 0;
     struct pollfd pfd = {.fd = handle->fd, .events = POLLRDNORM };
     while (poll(&pfd, 1, 0) == 1) {
-        fmux_message* mess = malloc(8);
-        fmux_pop(handle, mess);
-        write(handle->channels[mess->channel_id]->pipe_read[1], &(mess->data), mess->nbytes);
+        fmux_message* mess = malloc(2 * sizeof(uint32_t));
+        fmux_pop(handle, &mess);
+        write(handle->channels[mess->channel_id]->pipe_read[1], mess->data, mess->nbytes);
         free(mess);
         m_read++;
 
@@ -196,11 +193,11 @@ fmux_flush_writes(fmux_handle* handle)
         if (FD_ISSET(handle->channels[i]->pipe_write[0], &fds)) {
             char buf[1024];
             int bytes = read(handle->channels[i]->pipe_write[0], buf, 1024);
-            fmux_message* mess = malloc(bytes + 8);
-            memset(mess, 0, bytes + 8);
+            fmux_message* mess = malloc(bytes + 2*sizeof(uint32_t));
+            memset(mess, 0, bytes + 2*sizeof(uint32_t));
             mess->channel_id = i;
             mess->nbytes = bytes;
-            memcpy(&(mess->data), buf, bytes);
+            memcpy(mess->data, buf, bytes);
             fmux_push(handle, mess);
             free(mess);
         }

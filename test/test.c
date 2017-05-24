@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 
@@ -29,6 +30,7 @@ test_writing()
     int err = pipe(fd);
     if (err < -1) { perror("Pipe creation"); FAILURE }
     fmux_handle* handle = fmux_open(fd[1], FMUX_RECOMMENDED_CHANS);
+    ASSERT((handle != NULL))
     fmux_channel* channel = fmux_open_channel(handle, 1);
     ASSERT((channel != NULL))
     fmux_write(channel, "Hello", 6);
@@ -74,7 +76,9 @@ int
 main (int argc, char ** argv)
 {
     test_basic_plumbing();
+    //sleep(2);
     test_writing();
+    //sleep(2);
     test_reading();
 
     printf("\n\nTests: %6d; Passed: %6d; Failed: %6d\n\n", tests, successes, failures);

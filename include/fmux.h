@@ -1,4 +1,5 @@
 #include <sys/types.h>
+#include <stdint.h>
 
 #ifndef _FMUX_H_
 #define _FMUX_H_
@@ -25,9 +26,9 @@ struct _fmux_handle;
 typedef struct _fmux_handle fmux_handle;
 
 typedef struct {
-    int channel_id;
-    size_t nbytes;
-    char data;
+    uint32_t channel_id;
+    uint32_t nbytes;
+    char data[1];
 } fmux_message;
 
 /* Housekeeping */
@@ -44,7 +45,7 @@ fmux_open_channel(fmux_handle* handle, int channel_id);
 /* Reading */
 
 int
-fmux_pop(fmux_handle* handle, fmux_message* message);
+fmux_pop(fmux_handle* handle, fmux_message** message);
 
 int
 fmux_select(fmux_handle* handle, fmux_channel** ready, struct timeval *restrict timeout);
