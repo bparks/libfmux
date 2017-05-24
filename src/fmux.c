@@ -202,7 +202,8 @@ fmux_flush_writes(fmux_handle* handle)
     struct timeval timeout;
     timeout.tv_sec = 0; timeout.tv_usec = 0;
     int n = select(nfds + 1, &fds, NULL, NULL, &timeout);
-    for (int i = 0; i < handle->max_channels; i++) {
+    int nwritten = 0;
+    for (int i = 0; i < handle->max_channels && nwritten >= 0; i++) {
         if (handle->channels[i] == NULL) continue;
         if (FD_ISSET(handle->channels[i]->pipe_write[0], &fds)) {
             char buf[1024];
@@ -212,11 +213,11 @@ fmux_flush_writes(fmux_handle* handle)
             mess->channel_id = i;
             mess->nbytes = bytes;
             memcpy(mess->data, buf, bytes);
-            fmux_push(handle, mess);
+            nwritten = fmux_push(handle, mess);
             free(mess);
         }
     }
-    return 0;
+    return (nwritten >= 0);
 }
 
 int
@@ -225,7 +226,7 @@ fmux_write(fmux_channel* channel, const void* buf, size_t nbyte)
     if (!fmux_channel_is_good(channel)) return 0;
 
     int nwritten = write(channel->pipe_write[1], buf, nbyte);
-    fmux_flush_writes(channel->handle);
+    if (!fmux_flush_writes(channel->handle)) return -1;
     return nwritten;
 }
 

@@ -6,12 +6,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <sys/socket.h>
+#include <signal.h>
 
 int successes = 0, failures = 0, tests = 0;
 #define SUCCESS tests++; fprintf(stderr, "."); successes++;
 #define FAILURE tests++; fprintf(stderr, "F"); failures++;
 #define ASSERT(x) \
-    if (x) { SUCCESS } else { FAILURE ;; fprintf(stderr, "#x#\n"); return; }
+    if (x) { SUCCESS } else { FAILURE ;; fprintf(stderr, "%s\n", #x); return; }
 
 /* Private header stubs */
 int
@@ -134,6 +136,32 @@ test_reading_from_nonexistent_channel()
     fmux_close(handle);
 }
 
+void
+test_writing_to_closed_socket()
+{
+    //Disable SIGPIPE for this test
+    signal(SIGPIPE, SIG_IGN);
+
+    int fd[2];
+    int err = socketpair(AF_UNIX, SOCK_STREAM, 0, fd);
+    if (err < -1) { perror("socketpair"); FAILURE }
+    fmux_handle* handle = fmux_open(fd[1], FMUX_RECOMMENDED_CHANS);
+    ASSERT((handle != NULL))
+    fmux_channel* channel = fmux_open_channel(handle, 1);
+    ASSERT((channel != NULL))
+    int nbytes = fmux_write(channel, "Hello", 6);
+    ASSERT((nbytes == 6))
+    close(fd[0]);
+    //nbytes = fmux_write(channel, "Hello", 6); //The indication that the socket is closed probably lags by a message (but we'd prefer not)
+    nbytes = fmux_write(channel, "Hello", 6);
+    ASSERT((nbytes == -1))
+
+    fmux_close(handle);
+
+    //Undisable SIGPIPE for this test
+    signal(SIGPIPE, SIG_DFL);
+}
+
 
 int
 main (int argc, char ** argv)
@@ -143,8 +171,9 @@ main (int argc, char ** argv)
     test_reading();
     test_writing_to_nonexistent_channel();
     test_reading_from_nonexistent_channel();
+    test_writing_to_closed_socket();
 
     printf("\n\nTests: %6d; Passed: %6d; Failed: %6d\n\n", tests, successes, failures);
 
-    return 0;
+    return (tests == successes);
 }
