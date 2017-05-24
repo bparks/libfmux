@@ -164,7 +164,28 @@ fmux_flush_reads(fmux_handle* handle)
 int
 fmux_select(fmux_handle* handle, fmux_channel** ready, struct timeval *restrict timeout)
 {
-    return 0;
+    fmux_flush_reads(handle);
+
+    fd_set fds;
+    int nfds = 0;
+    FD_ZERO(&fds);
+    for (int i = 0; i < handle->max_channels; i++) {
+        if (handle->channels[i] == NULL) continue;
+        FD_SET(handle->channels[i]->pipe_read[0], &fds);
+        nfds = MAX(nfds, handle->channels[i]->pipe_read[0]);
+    }
+    nfds = select(nfds + 1, &fds, NULL, NULL, timeout);
+    if (nfds == -1 || ready == NULL) return nfds;
+
+    for (int i = 0, j = 0; i < handle->max_channels && j < nfds; i++) {
+        if (handle->channels[i] == NULL) continue;
+        if (FD_ISSET(handle->channels[i]->pipe_read[0], &fds)) {
+            ready[j] = handle->channels[i];
+            j++;
+        }
+    }
+
+    return nfds;
 }
 
 int
@@ -192,7 +213,7 @@ fmux_push(fmux_handle* handle, fmux_message* message)
 fmux_flush_writes(fmux_handle* handle)
 {
     fd_set fds;
-    int nfds;
+    int nfds = 0;
     FD_ZERO(&fds);
     for (int i = 0; i < handle->max_channels; i++) {
         if (handle->channels[i] == NULL) continue;

@@ -130,8 +130,14 @@ test_reading_from_nonexistent_channel()
     char * goodbye = "\0\0\0\1\0\0\0\x8Goodbye";
     write(fd[1], goodbye, 16);
 
-    //TODO: fmux_select should NOT list a channel object with id 1 (indeed,
+    //fmux_select should NOT list a channel object with id 1 (indeed,
     // there should be 0 channels ready to be read)
+    //When the second argument to fmux_select is NULL, it acts like like a
+    //poll indicating whether or not there is available data.
+    struct timeval timeout;
+    timeout.tv_sec = 0; timeout.tv_usec = 0;
+    err = fmux_select(handle, NULL, &timeout);
+    ASSERT((err == 0))
 
     fmux_close(handle);
 }
@@ -163,6 +169,50 @@ test_writing_to_closed_socket()
 }
 
 
+
+void
+test_reading_with_fmux_select()
+{
+    int fd[2];
+    int err = socketpair(AF_UNIX, SOCK_STREAM, 0, fd);
+    if (err < -1) { perror("socketpair"); FAILURE }
+
+    char * hello = "\0\0\0\1\0\0\0\xA" "Channel 1";
+    write(fd[1], hello, 18);
+    char * goodbye = "\0\0\0\2\0\0\0\xA" "Channel 2";
+    write(fd[1], goodbye, 18);
+
+    fmux_handle* handle = fmux_open(fd[0], FMUX_RECOMMENDED_CHANS);
+    fmux_channel* channel1 = fmux_open_channel(handle, 1);
+    fmux_channel* channel2 = fmux_open_channel(handle, 2);
+
+    ASSERT((channel1 != NULL))
+    ASSERT((channel2 != NULL))
+
+    fmux_channel** ready = calloc(FMUX_RECOMMENDED_CHANS, sizeof(fmux_channel*));
+    struct timeval timeout;
+    timeout.tv_sec = 0; timeout.tv_usec = 0;
+    err = fmux_select(handle, ready, &timeout);
+
+    ASSERT((err != -1))
+    ASSERT((err != 0))
+    ASSERT((err == 2))
+
+    for (int i = 0; i < err; i++) {
+        char buf[1024];
+        int nread = fmux_read(ready[i], buf, 1024);
+        ASSERT((nread == 10))
+        char truth[1024];
+        sprintf(truth, "Channel %d", i+1);
+        ASSERT((strcmp(buf, truth) == 0))
+    }
+
+    free(ready);
+
+    fmux_close(handle);
+}
+
+
 int
 main (int argc, char ** argv)
 {
@@ -172,8 +222,9 @@ main (int argc, char ** argv)
     test_writing_to_nonexistent_channel();
     test_reading_from_nonexistent_channel();
     test_writing_to_closed_socket();
+    test_reading_with_fmux_select();
 
     printf("\n\nTests: %6d; Passed: %6d; Failed: %6d\n\n", tests, successes, failures);
 
-    return (tests == successes);
+    return (tests == successes) ? 0 : 1;
 }
