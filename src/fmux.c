@@ -136,7 +136,9 @@ fmux_pop(fmux_handle* handle, fmux_message** message)
     memset(*message, 0, len + 2*sizeof(int));
     (*message)->channel_id = channel_id;
     (*message)->nbytes = len;
+    if (pthread_mutex_lock(&(handle->lock)) != 0) return -1;
     read(handle->fd, (*message)->data, len);
+    pthread_mutex_unlock(&(handle->lock));
     return 1;
 }
 
@@ -206,7 +208,10 @@ fmux_push(fmux_handle* handle, fmux_message* message)
     int bytes = message->nbytes;
     message->nbytes = htonl(bytes);
     message->channel_id = htonl(id);
-    return write(handle->fd, message, bytes + 8);
+    if (pthread_mutex_lock(&(handle->lock)) != 0) return -1;
+    int err = write(handle->fd, message, bytes + 8);
+    pthread_mutex_unlock(&(handle->lock));
+    return err;
 }
 
 /* PRIVATE */ int
