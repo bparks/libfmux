@@ -46,6 +46,12 @@ fmux_close(fmux_handle* handle);
 fmux_channel*
 fmux_open_channel(fmux_handle* handle, int channel_id);
 
+int
+fmux_channel_read_fd(fmux_channel* channel);
+
+int
+fmux_channel_write_fd(fmux_channel* channel);
+
 /* Reading */
 
 int

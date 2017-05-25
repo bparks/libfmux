@@ -114,6 +114,20 @@ fmux_close_channel(fmux_handle* handle, int index)
 }
 
 int
+fmux_channel_read_fd(fmux_channel* channel)
+{
+    if (fmux_channel_is_good(channel)) return channel->pipe_read[0];
+    return -1;
+}
+
+int
+fmux_channel_write_fd(fmux_channel* channel)
+{
+    if (fmux_channel_is_good(channel)) return channel->pipe_write[1];
+    return -1;
+}
+
+int
 fmux_channel_is_good(fmux_channel* channel)
 {
     if (channel == NULL) return 0;
