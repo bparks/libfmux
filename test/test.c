@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <sys/socket.h>
 #include <signal.h>
+#include <pthread.h>
 
 int successes = 0, failures = 0, tests = 0;
 #define SUCCESS tests++; fprintf(stderr, "."); successes++;
@@ -212,6 +213,83 @@ test_reading_with_fmux_select()
     fmux_close(handle);
 }
 
+void
+test_management_of_handle_lists()
+{
+    int fd[2];
+    int err = socketpair(AF_UNIX, SOCK_STREAM, 0, fd);
+    if (err < -1) { perror("socketpair"); FAILURE }
+
+    fmux_handle* handle1 = fmux_open(fd[0], FMUX_RECOMMENDED_CHANS);
+    fmux_handle* handle2 = fmux_open(fd[1], FMUX_RECOMMENDED_CHANS);
+    fmux_pump pump;
+    fmux_pump_init(&pump);
+
+    fmux_pump_add_handle(&pump, handle1);
+    ASSERT((pump.length == 1))
+
+    fmux_pump_add_handle(&pump, handle1);
+    ASSERT((pump.length == 1))
+
+    fmux_pump_add_handle(&pump, handle2);
+    ASSERT((pump.length == 2))
+
+    fmux_pump_remove_handle(&pump, handle1);
+    ASSERT((pump.length == 1))
+
+    fmux_pump_add_handle(&pump, handle1);
+    ASSERT((pump.length == 2))
+
+    fmux_pump_remove_handle(&pump, handle1);
+    ASSERT((pump.length == 1))
+}
+
+void*
+fmux_pump_t_func(void* arg)
+{
+    fmux_pump_start(arg);
+    return NULL;
+}
+
+void
+test_using_pump()
+{
+    int fd[2];
+    int err = socketpair(AF_UNIX, SOCK_STREAM, 0, fd);
+    if (err < -1) { perror("socketpair"); FAILURE }
+
+    fmux_handle* handle1 = fmux_open(fd[0], FMUX_RECOMMENDED_CHANS);
+    fmux_handle* handle2 = fmux_open(fd[1], FMUX_RECOMMENDED_CHANS);
+    fmux_channel* channel1 = fmux_open_channel(handle1, 0);
+    fmux_channel* channel2 = fmux_open_channel(handle2, 0);
+
+    char * hello = "\0\0\0\0\0\0\0\xA" "Channel 0";
+    write(fd[1], hello, 18);
+    write(fd[0], hello, 18);
+
+    fmux_pump pump;
+    fmux_pump_init(&pump);
+    pthread_t thread;
+    pthread_create(&thread, NULL, &fmux_pump_t_func, &pump);
+    fmux_pump_add_handle(&pump, handle1);
+    fmux_pump_add_handle(&pump, handle2);
+
+    //sleep(3); //Give it enough time to process the messages above (which get
+              //dropped because we didn't open any channels)
+
+    char buf[1024];
+    err = fmux_read(channel1, buf, 1024);
+    ASSERT((err > 0))
+    ASSERT((strcmp(buf, "Channel 0") == 0))
+    err = fmux_read(channel2, buf, 1024);
+    ASSERT((err > 0))
+    ASSERT((strcmp(buf, "Channel 0") == 0))
+
+    fmux_pump_stop(&pump);
+    pthread_cancel(thread);
+    pthread_join(thread, NULL);
+}
+
 
 int
 main (int argc, char ** argv)
@@ -223,6 +301,8 @@ main (int argc, char ** argv)
     test_reading_from_nonexistent_channel();
     test_writing_to_closed_socket();
     test_reading_with_fmux_select();
+    //test_management_of_handle_lists();
+    test_using_pump();
 
     printf("\n\nTests: %6d; Passed: %6d; Failed: %6d\n\n", tests, successes, failures);
 

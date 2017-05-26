@@ -29,6 +29,16 @@ typedef struct _fmux_channel fmux_channel;
 struct _fmux_handle;
 typedef struct _fmux_handle fmux_handle;
 
+struct _fmux_handle_link;
+typedef struct _fmux_handle_link fmux_handle_link;
+
+typedef struct _fmux_pump {
+    int run;
+    int length;
+    pthread_mutex_t lock;
+    fmux_handle_link* head;
+} fmux_pump;
+
 typedef struct {
     uint32_t channel_id;
     uint32_t nbytes;
@@ -75,18 +85,26 @@ fmux_write(fmux_channel* channel, const void* buf, size_t nbyte);
  * This DOES NOT spawn its own thread; YOU should do that part.
  */
 
-//Returns "pump ID"
+ void
+ fmux_pump_init(fmux_pump* pump);
+
+//Only returns when the pump is stopped.
+//Highly recommend NOT using malloc to allocate the pump, lest you create a
+//race condition between calling fmux_pump_stop and the thread you called
+//fmux_pump_start actually finishing that MAY result in weird SEGFAULTs
 int
-fmux_pump_start();
+fmux_pump_start(fmux_pump* pump);
 
 int
-fmux_pump_add_handle(fmux_handle* handle);
+fmux_pump_add_handle(fmux_pump* pump, fmux_handle* handle);
 
 int
-fmux_pump_remove_handle(fmux_handle* handle);
+fmux_pump_remove_handle(fmux_pump* pump, fmux_handle* handle);
 
+//TODO: Make fmux_pump_stop not return until the pump has fully stopped and
+//cleaned up after itself.
 int
-fmux_pump_stop(int pump_id);
+fmux_pump_stop(fmux_pump* pump_id);
 
 #ifdef __cplusplus
 }

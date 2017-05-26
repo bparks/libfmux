@@ -34,8 +34,14 @@ struct _fmux_channel {
 struct _fmux_handle {
     int fd;
     int max_channels;
+    int sync_read;
     pthread_mutex_t lock;
     fmux_channel **channels;
+};
+
+struct _fmux_handle_link {
+    fmux_handle* data;
+    fmux_handle_link* next;
 };
 
 
@@ -50,6 +56,7 @@ fmux_open(int fd, int max_channels)
 
     ret->fd = fd;
     ret->max_channels = max_channels;
+    ret->sync_read = 1;
     ret->channels = malloc(max_channels * sizeof(fmux_channel*));
     memset(ret->channels, 0, max_channels * sizeof(fmux_channel*));
 
@@ -160,7 +167,7 @@ fmux_pop(fmux_handle* handle, fmux_message** message)
 fmux_flush_reads(fmux_handle* handle)
 {
     int m_read = 0;
-    struct pollfd pfd = {.fd = handle->fd, .events = POLLRDNORM };
+    struct pollfd pfd = {.fd = handle->fd, .events = POLLIN };
     while (poll(&pfd, 1, 0) == 1) {
         fmux_message* mess = malloc(2 * sizeof(uint32_t));
         fmux_pop(handle, &mess);
@@ -172,7 +179,7 @@ fmux_flush_reads(fmux_handle* handle)
 
         //Reset the struct
         pfd.fd = handle->fd;
-        pfd.events = POLLRDNORM;
+        pfd.events = POLLIN;
     }
     return m_read;
 }
@@ -180,7 +187,8 @@ fmux_flush_reads(fmux_handle* handle)
 int
 fmux_select(fmux_handle* handle, fmux_channel** ready, struct timeval *restrict timeout)
 {
-    fmux_flush_reads(handle);
+    if (handle->sync_read)
+        fmux_flush_reads(handle);
 
     fd_set fds;
     int nfds = 0;
@@ -209,7 +217,8 @@ fmux_read(fmux_channel* channel, void* buf, size_t nbyte)
 {
     if (!fmux_channel_is_good(channel)) return 0;
 
-    fmux_flush_reads(channel->handle);
+    if (channel->handle->sync_read)
+        fmux_flush_reads(channel->handle);
     return read(channel->pipe_read[0], buf, nbyte);
 }
 
@@ -274,24 +283,154 @@ fmux_write(fmux_channel* channel, const void* buf, size_t nbyte)
  * This DOES NOT spawn its own thread; YOU should do that part.
  */
 
-//Returns "pump ID"
-int
-fmux_pump_start()
+
+void
+fmux_pump_init(fmux_pump* pump)
 {
+    pump->run = 1;
+    pump->head = NULL;
+    pump->length = 0;
+    pthread_mutex_init(&(pump->lock), NULL);
+}
+
+int
+fmux_pump_start(fmux_pump* pump)
+{
+    while (pump->run) {
+        if (pump->head == NULL) {
+            sleep(1); //Don't waste cycles busy-waiting
+            //TODO: Replace this with a semaphore; if the semaphore allows this
+            // code to execute and pump->head is still NULL, just continue because
+            // we can assume that (maybe?) pump->run has also been set to 0.
+            continue;
+        }
+
+        pthread_mutex_lock(&(pump->lock));
+        struct pollfd* fds = calloc(pump->length, sizeof(struct pollfd));
+        fmux_handle_link* cur = pump->head;
+        int nfds = 0;
+        while (cur != NULL && nfds < pump->length) {
+            fds[nfds].fd = cur->data->fd;
+            fds[nfds].events = POLLIN;
+            nfds++;
+            cur = cur->next;
+        }
+
+        int nready = poll(fds, nfds, -1); //Block until we have input
+
+        if (nready > 0) {
+            //Because of the lock, the number and position of the handles in the list
+            //should still be the same.
+            int idx = 0;
+            nfds = 0;
+            cur = pump->head;
+            while (cur != NULL && idx < pump->length && nfds < nready) {
+                if ((fds[idx].revents & POLLIN) > 0) {
+                    fmux_flush_reads(cur->data);
+                    nfds++;
+                }
+                idx++;
+                cur = cur->next;
+            }
+        } else {
+            //TODO: So...what happened
+            sleep(1);
+        }
+        pthread_mutex_unlock(&(pump->lock));
+    }
+    //Just in case we accidentally introduce a break somewhere...
+    pump->run = 0;
+
+    fmux_handle_link* cur = pump->head;
+    while (cur != NULL) {
+        void* to_free = cur;
+        cur = cur->next;
+        free(to_free);
+    }
+
+    pthread_mutex_destroy(&(pump->lock));
+
     return 0;
 }
 
 int
-fmux_pump_add_handle(fmux_handle* handle)
+fmux_pump_add_handle(fmux_pump* pump, fmux_handle* handle)
 {
+    if (!pump->run) return -1; //Can't add handles to a stopped pump!
+    if (!handle->sync_read) return -1; //Can't add a handle to multiple pumps;
+
+    pthread_mutex_lock(&(pump->lock));
+
+    fmux_handle_link* cur = pump->head;
+    int should_add = 1;
+    while (cur != NULL) {
+        if (cur->data == handle) {
+            //Handle is already in the list. That's fine, but we shouldn't add
+            //it again
+            should_add = 0;
+            break;
+        }
+        if (cur->next != NULL) {
+            cur = cur->next;
+        } else {
+            break;
+        }
+    }
+    if (should_add) {
+        //cur points to the LAST item in the list because of the conditional at
+        //the end of the while loop above
+        fmux_handle_link* new_item = malloc(sizeof(fmux_handle_link));
+        new_item->next = NULL;
+        new_item->data = handle;
+        handle->sync_read = 0;
+        if (cur != NULL) { cur->next = new_item; } else { pump->head = new_item; }
+        pump->length++;
+    }
+
+    pthread_mutex_unlock(&(pump->lock));
+
     return 0;
 }
 
 int
-fmux_pump_remove_handle(fmux_handle* handle)
+fmux_pump_remove_handle(fmux_pump* pump, fmux_handle* handle)
 {
+    if (!pump->run) return -1; //Can't remove handles from a stopped pump!
+
+    pthread_mutex_lock(&(pump->lock));
+
+    fmux_handle_link dummy = {.data = NULL, .next = pump->head};
+    fmux_handle_link* cur = &dummy;
+    while (cur->next != NULL) {
+        if (cur->next->data == handle) {
+            //Found it! Now let's remove it.
+            //We WON'T reset any of the members yet, though
+            fmux_handle_link* to_remove = cur->next;
+            to_remove->data->sync_read = 1;
+            cur->next = cur->next->next;
+            //The special case. If it's the head node, we need to reset pump->head
+            if (cur == &dummy) {
+                pump->head = pump->head->next;
+            }
+            //And free the memory
+            free(to_remove);
+            pump->length--;
+            break;
+        }
+        //Finally, advance pointer
+        cur = cur->next;
+    }
+
+    pthread_mutex_unlock(&(pump->lock));
+
     return 0;
 }
 
 int
-fmux_pump_stop(int pump_id);
+fmux_pump_stop(fmux_pump* pump)
+{
+    if (!pump->run) return -1;
+    pump->run = 0;
+
+    return 0;
+}
