@@ -2,6 +2,7 @@
 #include "../include/fmux.h"
 
 #include <sys/select.h>
+#include <sys/socket.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <string.h>
@@ -26,8 +27,10 @@ struct _fmux_channel {
      * process reads from pipe_read[0] and writes to pipe_write[1].
      * The underlying fd, therefore, reads from pipe_write[0] and
      * writes to pipe_read[1] */
-    int pipe_read[2];
-    int pipe_write[2];
+    //Read and write to sock[0] via fmux_read and fmux_write, but
+    //read and write into sock[1] from the underlying fd (e.g. in
+    //fmux_push and fmux_pop)
+    int sock[2]; // { LOCAL, REMOTE }
     fmux_chantype type;
 };
 
@@ -97,8 +100,7 @@ fmux_open_channel(fmux_handle* handle, int channel_id)
     chan->id = channel_id;
     chan->handle = handle;
     chan->type = FMUX_CHANTYPE_TEXT; //Does this matter?
-    pipe(chan->pipe_read);
-    pipe(chan->pipe_write);
+    socketpair(AF_LOCAL, SOCK_STREAM, 0, chan->sock);
     handle->channels[channel_id] = chan;
 
     return chan;
@@ -112,10 +114,8 @@ fmux_close_channel(fmux_handle* handle, int index)
 
     fmux_channel* channel = handle->channels[index];
     handle->channels[index] = NULL;
-    close(channel->pipe_read[0]);
-    close(channel->pipe_read[1]);
-    close(channel->pipe_write[0]);
-    close(channel->pipe_write[1]);
+    close(channel->sock[0]);
+    close(channel->sock[1]);
     channel->handle = NULL;
     free(channel);
     return 0;
@@ -134,14 +134,14 @@ fmux_channel_is_good(fmux_channel* channel)
 int
 fmux_channel_read_fd(fmux_channel* channel)
 {
-    if (fmux_channel_is_good(channel)) return channel->pipe_read[0];
+    if (fmux_channel_is_good(channel)) return channel->sock[0];
     return -1;
 }
 
 int
 fmux_channel_write_fd(fmux_channel* channel)
 {
-    if (fmux_channel_is_good(channel)) return channel->pipe_write[1];
+    if (fmux_channel_is_good(channel)) return channel->sock[1];
     return -1;
 }
 
@@ -173,7 +173,7 @@ fmux_flush_reads(fmux_handle* handle)
         fmux_message* mess = malloc(2 * sizeof(uint32_t));
         fmux_pop(handle, &mess);
         if (mess->channel_id < handle->max_channels && handle->channels[mess->channel_id] != NULL) {
-            write(handle->channels[mess->channel_id]->pipe_read[1], mess->data, mess->nbytes);
+            write(handle->channels[mess->channel_id]->sock[1], mess->data, mess->nbytes);
             m_read++;
         }
         free(mess);
@@ -196,15 +196,15 @@ fmux_select(fmux_handle* handle, fmux_channel** ready, struct timeval *restrict 
     FD_ZERO(&fds);
     for (int i = 0; i < handle->max_channels; i++) {
         if (handle->channels[i] == NULL) continue;
-        FD_SET(handle->channels[i]->pipe_read[0], &fds);
-        nfds = MAX(nfds, handle->channels[i]->pipe_read[0]);
+        FD_SET(handle->channels[i]->sock[0], &fds);
+        nfds = MAX(nfds, handle->channels[i]->sock[0]);
     }
     nfds = select(nfds + 1, &fds, NULL, NULL, timeout);
     if (nfds == -1 || ready == NULL) return nfds;
 
     for (int i = 0, j = 0; i < handle->max_channels && j < nfds; i++) {
         if (handle->channels[i] == NULL) continue;
-        if (FD_ISSET(handle->channels[i]->pipe_read[0], &fds)) {
+        if (FD_ISSET(handle->channels[i]->sock[0], &fds)) {
             ready[j] = handle->channels[i];
             j++;
         }
@@ -220,7 +220,7 @@ fmux_read(fmux_channel* channel, void* buf, size_t nbyte)
 
     if (channel->handle->sync_read)
         fmux_flush_reads(channel->handle);
-    return read(channel->pipe_read[0], buf, nbyte);
+    return read(channel->sock[0], buf, nbyte);
 }
 
 /* Writing */
@@ -246,8 +246,8 @@ fmux_flush_writes(fmux_handle* handle)
     FD_ZERO(&fds);
     for (int i = 0; i < handle->max_channels; i++) {
         if (handle->channels[i] == NULL) continue;
-        FD_SET(handle->channels[i]->pipe_write[0], &fds);
-        nfds = MAX(nfds, handle->channels[i]->pipe_write[0]);
+        FD_SET(handle->channels[i]->sock[1], &fds);
+        nfds = MAX(nfds, handle->channels[i]->sock[1]);
     }
     struct timeval timeout;
     timeout.tv_sec = 0; timeout.tv_usec = 0;
@@ -255,9 +255,9 @@ fmux_flush_writes(fmux_handle* handle)
     int nwritten = 0;
     for (int i = 0; i < handle->max_channels && nwritten >= 0; i++) {
         if (handle->channels[i] == NULL) continue;
-        if (FD_ISSET(handle->channels[i]->pipe_write[0], &fds)) {
+        if (FD_ISSET(handle->channels[i]->sock[1], &fds)) {
             char buf[1024];
-            int bytes = read(handle->channels[i]->pipe_write[0], buf, 1024);
+            int bytes = read(handle->channels[i]->sock[1], buf, 1024);
             fmux_message* mess = malloc(bytes + 2*sizeof(uint32_t));
             memset(mess, 0, bytes + 2*sizeof(uint32_t));
             mess->channel_id = i;
@@ -275,7 +275,7 @@ fmux_write(fmux_channel* channel, const void* buf, size_t nbyte)
 {
     if (!fmux_channel_is_good(channel)) return 0;
 
-    int nwritten = write(channel->pipe_write[1], buf, nbyte);
+    int nwritten = write(channel->sock[0], buf, nbyte);
     if (!fmux_flush_writes(channel->handle)) return -1;
     return nwritten;
 }
