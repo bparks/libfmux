@@ -62,6 +62,8 @@ fmux_open(int fd, int max_channels)
 
     pthread_mutex_init(&(ret->lock), NULL);
 
+    fmux_open_channel(ret, 0);
+
     return ret;
 }
 
@@ -88,7 +90,6 @@ fmux_open_channel(fmux_handle* handle, int channel_id)
     if (channel_id >= handle->max_channels) return NULL;
 
     if (handle->channels[channel_id] != NULL) {
-        fprintf(stderr, "Channel %d has already been allocated!\n", channel_id);
         return handle->channels[channel_id];
     }
 
